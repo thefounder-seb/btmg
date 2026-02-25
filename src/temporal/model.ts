@@ -107,6 +107,70 @@ export async function queryByLabel(
   })) as EntityWithState[];
 }
 
+/** Get entities changed since a timestamp */
+export async function getChangesSince(
+  client: Neo4jClient,
+  since: string,
+  opts?: { labels?: string[]; actors?: string[]; limit?: number }
+): Promise<Array<EntityWithState & { audits: Record<string, unknown>[]; lastChange: string }>> {
+  const result = await client.read(async (tx) => {
+    const compiled = cypher.cypherChangesSince({
+      since,
+      labels: opts?.labels,
+      actors: opts?.actors,
+      limit: opts?.limit ?? 100,
+    });
+    return tx.run(compiled.query, compiled.params);
+  });
+
+  return result.records.map((r) => ({
+    entity: normalizeProps(r.get("e").properties),
+    state: r.get("s") ? normalizeProps(r.get("s").properties) : null,
+    audits: r.get("audits") as Record<string, unknown>[],
+    lastChange: r.get("lastChange") as string,
+  })) as Array<EntityWithState & { audits: Record<string, unknown>[]; lastChange: string }>;
+}
+
+/** Search entities by label with property filters */
+export async function searchEntities(
+  client: Neo4jClient,
+  label: string,
+  filters: Array<{ property: string; operator: string; value: unknown }>,
+  opts?: { limit?: number; orderBy?: string; orderDir?: "asc" | "desc" }
+): Promise<EntityWithState[]> {
+  const result = await client.read(async (tx) => {
+    const compiled = cypher.cypherSearch({
+      label,
+      filters,
+      limit: opts?.limit ?? 50,
+      orderBy: opts?.orderBy,
+      orderDir: opts?.orderDir,
+    });
+    return tx.run(compiled.query, compiled.params);
+  });
+
+  return result.records.map((r) => ({
+    entity: normalizeProps(r.get("e").properties),
+    state: normalizeProps(r.get("s").properties),
+  })) as EntityWithState[];
+}
+
+/** Get graph summary: entity counts by label */
+export async function getGraphSummary(
+  client: Neo4jClient
+): Promise<Array<{ label: string; count: number; lastModified: string }>> {
+  const result = await client.read(async (tx) => {
+    const compiled = cypher.cypherGraphSummary();
+    return tx.run(compiled.query, compiled.params);
+  });
+
+  return result.records.map((r) => ({
+    label: r.get("label") as string,
+    count: toNumber(r.get("count")),
+    lastModified: r.get("lastModified") as string,
+  }));
+}
+
 /** Get all active relationships for an entity */
 export async function getRelationships(
   client: Neo4jClient,

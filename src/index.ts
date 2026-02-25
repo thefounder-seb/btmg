@@ -40,17 +40,29 @@ export type {
   EntityNode,
   StateNode,
   DocFrontmatter,
+  DocsConfig,
+  DocsFramework,
+  ScanConfig,
+  ScanMapping,
+  SupportedLanguage,
+  ArtifactKind,
+  RawArtifact,
+  ArtifactRef,
+  SchemaPreset,
 } from "./schema/types.js";
 export type { EntityWithState } from "./temporal/model.js";
 export type { GraphSnapshot } from "./temporal/snapshot.js";
 export type { VersionDiff, PropertyChange } from "./temporal/diff.js";
 export { SchemaRegistry } from "./schema/registry.js";
+export { presets } from "./schema/presets.js";
 export { Neo4jClient } from "./neo4j/client.js";
 export { computeSyncHash } from "./docs/renderer.js";
 export { parseDoc, parseDocs, extractProperties } from "./docs/parser.js";
 export { renderDoc, writeDoc, writeDocs } from "./docs/renderer.js";
 export { createTemplate } from "./docs/templates.js";
 export type { RenderTemplate, EntityRelationship } from "./docs/templates.js";
+export { runScan } from "./scanner/pipeline.js";
+export type { ScanResult, ScanPipelineOptions, ScanError } from "./scanner/types.js";
 
 /** Load config from a btmg config file */
 export async function loadConfig(configPath?: string): Promise<BTMGConfig> {
@@ -88,10 +100,10 @@ export async function loadConfig(configPath?: string): Promise<BTMGConfig> {
 export class BTMG {
   readonly client: Neo4jClient;
   readonly registry: SchemaRegistry;
-  private config: BTMGConfig;
+  /** @internal */ readonly _config: BTMGConfig;
 
   constructor(config: BTMGConfig, neo4jConfig?: Neo4jClientConfig) {
-    this.config = config;
+    this._config = config;
     this.registry = new SchemaRegistry(config.schema);
     this.client = new Neo4jClient(
       neo4jConfig ?? {
@@ -105,7 +117,7 @@ export class BTMG {
 
   /** Apply schema constraints/indexes to Neo4j */
   async migrate(): Promise<string[]> {
-    return applyMigrations(this.client, this.config.schema);
+    return applyMigrations(this.client, this._config.schema);
   }
 
   /** Create or update an entity */
@@ -188,9 +200,9 @@ export class BTMG {
     actor?: string;
   }): Promise<SyncResult> {
     return sync(this.client, this.registry, {
-      docsDir: opts?.docsDir ?? this.config.docs?.directory ?? "./docs",
-      format: opts?.format ?? this.config.docs?.format ?? "md",
-      conflictStrategy: opts?.conflictStrategy ?? this.config.sync?.conflictStrategy ?? "graph-wins",
+      docsDir: opts?.docsDir ?? this._config.docs?.outputDir ?? this._config.docs?.directory ?? "./docs",
+      format: opts?.format ?? this._config.docs?.format ?? "md",
+      conflictStrategy: opts?.conflictStrategy ?? this._config.sync?.conflictStrategy ?? "graph-wins",
       actor: opts?.actor ?? "btmg",
     });
   }
@@ -199,6 +211,21 @@ export class BTMG {
   validate(label: string, properties: Record<string, unknown>) {
     const validator = this.registry.getNodeValidator(label);
     return validator.validate(properties);
+  }
+
+  /** Scan a codebase */
+  async scan(target: string, opts?: {
+    dryRun?: boolean;
+    actor?: string;
+    githubToken?: string;
+  }): Promise<import("./scanner/types.js").ScanResult> {
+    const { runScan } = await import("./scanner/pipeline.js");
+    return runScan(this, {
+      target,
+      actor: opts?.actor ?? "btmg-scanner",
+      dryRun: opts?.dryRun,
+      githubToken: opts?.githubToken,
+    });
   }
 
   /** Close the Neo4j connection */

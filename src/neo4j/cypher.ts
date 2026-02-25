@@ -310,6 +310,112 @@ export function cypherGetRelationships(id: string): { query: string; params: Rec
   };
 }
 
+// ── Agent memory queries ──
+
+/** Get all entities changed since a timestamp via audit trail */
+export function cypherChangesSince(params: {
+  since: string;
+  labels?: string[];
+  actors?: string[];
+  limit: number;
+}): { query: string; params: Record<string, unknown> } {
+  return {
+    query: `
+      MATCH (e:Entity)-[:AUDITED]->(a:AuditEntry)
+      WHERE a._timestamp > $since
+        AND ($labels IS NULL OR e._label IN $labels)
+        AND ($actors IS NULL OR a._actor IN $actors)
+        AND e._deleted_at IS NULL
+      WITH e, collect(a { .* }) AS audits, max(a._timestamp) AS lastChange
+      ORDER BY lastChange DESC
+      LIMIT $limit
+      OPTIONAL MATCH (e)-[:CURRENT]->(s:State)
+      RETURN e, s, audits, lastChange
+    `,
+    params: {
+      since: params.since,
+      labels: params.labels ?? null,
+      actors: params.actors ?? null,
+      limit: params.limit,
+    },
+  };
+}
+
+/** Search entities by label with property filters */
+export function cypherSearch(params: {
+  label: string;
+  filters: Array<{ property: string; operator: string; value: unknown }>;
+  limit: number;
+  orderBy?: string;
+  orderDir?: "asc" | "desc";
+}): { query: string; params: Record<string, unknown> } {
+  const safeLabel = sanitizeIdentifier(params.label);
+  const whereClauses: string[] = [];
+  const queryParams: Record<string, unknown> = { limit: params.limit };
+
+  for (let i = 0; i < params.filters.length; i++) {
+    const f = params.filters[i];
+    const prop = sanitizeIdentifier(f.property);
+    const paramKey = `filter_${i}`;
+    queryParams[paramKey] = f.value;
+
+    switch (f.operator) {
+      case "eq":
+        whereClauses.push(`s.${prop} = $${paramKey}`);
+        break;
+      case "contains":
+        whereClauses.push(`s.${prop} CONTAINS $${paramKey}`);
+        break;
+      case "gt":
+        whereClauses.push(`s.${prop} > $${paramKey}`);
+        break;
+      case "lt":
+        whereClauses.push(`s.${prop} < $${paramKey}`);
+        break;
+      case "gte":
+        whereClauses.push(`s.${prop} >= $${paramKey}`);
+        break;
+      case "lte":
+        whereClauses.push(`s.${prop} <= $${paramKey}`);
+        break;
+      case "in":
+        whereClauses.push(`s.${prop} IN $${paramKey}`);
+        break;
+    }
+  }
+
+  const whereStr = whereClauses.length > 0 ? `AND ${whereClauses.join(" AND ")}` : "";
+  const orderProp = params.orderBy ? sanitizeIdentifier(params.orderBy) : null;
+  const orderStr = orderProp
+    ? `ORDER BY s.${orderProp} ${params.orderDir === "asc" ? "ASC" : "DESC"}`
+    : "";
+
+  return {
+    query: `
+      MATCH (e:Entity:${safeLabel})-[:CURRENT]->(s:State)
+      WHERE e._deleted_at IS NULL AND s._valid_to IS NULL ${whereStr}
+      RETURN e, s
+      ${orderStr}
+      LIMIT $limit
+    `,
+    params: queryParams,
+  };
+}
+
+/** Get a graph summary: entity counts by label, last activity */
+export function cypherGraphSummary(): { query: string; params: Record<string, unknown> } {
+  return {
+    query: `
+      MATCH (e:Entity)-[:CURRENT]->(s:State)
+      WHERE e._deleted_at IS NULL AND s._valid_to IS NULL
+      WITH e._label AS label, count(*) AS count, max(s._valid_from) AS lastModified
+      RETURN label, count, lastModified
+      ORDER BY count DESC
+    `,
+    params: {},
+  };
+}
+
 /** Write standalone audit entry (for cases not covered by combined queries) */
 export function cypherAuditEntry(params: {
   id: string;
