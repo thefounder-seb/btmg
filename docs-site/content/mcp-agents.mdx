@@ -1,0 +1,202 @@
+---
+title: MCP for AI Agents
+description: How AI agents use BTMG as a shared, versioned, audited memory layer through the Model Context Protocol.
+---
+
+## Overview
+
+BTMG exposes a full Model Context Protocol (MCP) server that AI agents can connect to as a memory backend. Agents read and write structured entities, query graph state, connect entities with typed relationships, and trigger doc sync — all through a standard MCP interface.
+
+Because all reads and writes go through Neo4j, multiple agents share the same graph simultaneously. Changes made by one agent are immediately visible to others. This makes BTMG a practical shared memory layer for multi-agent systems.
+
+## Setup
+
+Start the MCP server with:
+
+```bash
+npx btmg serve
+```
+
+The server reads connection details from environment variables:
+
+```bash
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=your-password
+BTMG_CONFIG=./btmg.config.ts   # optional, defaults to cwd
+```
+
+### Claude Desktop
+
+Add the following to your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "btmg": {
+      "command": "npx",
+      "args": ["btmg", "serve"],
+      "env": {
+        "NEO4J_URI": "bolt://localhost:7687",
+        "NEO4J_USER": "neo4j",
+        "NEO4J_PASSWORD": "your-password"
+      }
+    }
+  }
+}
+```
+
+### Cursor
+
+Add the same block under `"mcpServers"` in your Cursor MCP settings. The configuration format is identical to Claude Desktop.
+
+### Any MCP Client
+
+BTMG implements the MCP specification over stdio. Any compliant MCP client can connect by launching `npx btmg serve` as a subprocess and communicating over stdin/stdout.
+
+## Available Tools
+
+These are the MCP tools exposed by the BTMG server. Agents call these to read and modify graph state.
+
+| Tool | Description |
+|---|---|
+| `upsert` | Create or update an entity. Validates properties against the schema, increments `_version`, writes an audit entry, and recomputes `_sync_hash`. |
+| `delete` | Remove an entity by ID. Cascades to detach all relationships. Writes a deletion entry to the audit log. |
+| `relate` | Create a typed, directional relationship between two entities. Optionally attach properties to the relationship. |
+| `query` | Query entities by label, property filters, or Cypher. Returns full entity objects including system fields. |
+| `sync` | Trigger a bidirectional sync run between the graph and the configured docs directory. Accepts a conflict strategy override. |
+| `snapshot` | Reconstruct the full graph state at a given ISO 8601 timestamp. Returns a read-only view of what the graph looked like at that point in time. |
+| `changelog` | Return the full version history for a specific entity, ordered newest first. Each entry includes the diff of changed properties. |
+| `diff` | Compare two versions of an entity and return a structured property diff. Useful for reviewing what changed between agent runs. |
+| `validate` | Validate a proposed set of properties against the schema for a given label without writing to the graph. Returns validation errors if any. |
+
+## Available Resources
+
+MCP resources are read-only data endpoints agents can fetch for context.
+
+| Resource URI | Description |
+|---|---|
+| `btmg://schema` | The full schema definition: all valid labels, their allowed properties, types, and constraints. Agents should read this before upserting to avoid validation errors. |
+| `btmg://entity/{id}` | The current state of a single entity, including all properties, system fields, and outgoing relationships. |
+| `btmg://changelog/{id}` | The version history for an entity in a structured format, equivalent to calling the `changelog` tool. |
+| `btmg://audit/{id}` | The raw audit log for an entity, including who or what made each change and when. Useful for agents that need to reason about provenance. |
+
+## How Agents Use BTMG
+
+### 1. Discover the Schema
+
+Before writing anything, an agent should read `btmg://schema` to understand what entity types exist and what properties are valid for each.
+
+```
+Agent reads: btmg://schema
+Response: { labels: ["Service", "Team", "Database"], schema: { Service: { name: string, status: enum["active","deprecated"] ... } } }
+```
+
+This prevents the agent from inventing property names that do not conform to the schema and allows it to construct valid `upsert` calls.
+
+### 2. Upsert Entities
+
+The agent creates or updates entities using the `upsert` tool. BTMG handles versioning and auditing automatically.
+
+```json
+{
+  "tool": "upsert",
+  "input": {
+    "label": "Service",
+    "id": "payment-service",
+    "properties": {
+      "name": "Payment Service",
+      "status": "active",
+      "owner": "payments-team"
+    }
+  }
+}
+```
+
+Every upsert increments `_version` and writes an audit entry recording the agent's identity (from the MCP session), the timestamp, and the property diff.
+
+### 3. Query State for Context
+
+Before making decisions, agents should query the graph to understand current state rather than relying on assumptions.
+
+```json
+{
+  "tool": "query",
+  "input": {
+    "label": "Service",
+    "filters": { "status": "active" }
+  }
+}
+```
+
+Agents can also read a specific entity's current state via `btmg://entity/{id}` to get full relationship context.
+
+### 4. Connect Entities with Relationships
+
+Agents create typed relationships between entities to capture dependencies, ownership, or any other structural information.
+
+```json
+{
+  "tool": "relate",
+  "input": {
+    "from": "payment-service",
+    "to": "postgres-db",
+    "type": "DEPENDS_ON",
+    "properties": { "critical": true }
+  }
+}
+```
+
+Relationships are first-class in the graph and appear in rendered Mermaid diagrams in the documentation.
+
+### 5. Sync to Docs
+
+After a batch of writes, an agent can trigger a sync to push the updated graph state into the documentation directory.
+
+```json
+{
+  "tool": "sync",
+  "input": {
+    "strategy": "graph-wins"
+  }
+}
+```
+
+This renders all updated entities to Markdown files, complete with refreshed Mermaid relationship diagrams.
+
+## A2A Shared Memory
+
+Multiple agents connecting to the same BTMG server read and write the same underlying Neo4j graph. There is no per-agent state isolation — writes are immediately visible to all connected agents.
+
+This makes BTMG suitable as a shared memory layer in agent-to-agent (A2A) workflows:
+
+- A planning agent can create entities representing tasks, services, or decisions.
+- An execution agent can update those entities with status and output.
+- A review agent can read the changelog to understand what changed and who changed it.
+- A documentation agent can trigger sync to publish the latest state.
+
+All agents operate on the same consistent view of the world, with full version history and audit trails for every write.
+
+## Example Agent Workflow
+
+The following illustrates a three-agent workflow for a system design task:
+
+**Planning agent** (runs first):
+1. Reads `btmg://schema` to discover valid entity types.
+2. Upserts three `Service` entities: `api-gateway`, `auth-service`, `payment-service`.
+3. Creates `CALLS` relationships between them.
+4. Runs `sync` to publish the initial architecture to docs.
+
+**Coding agent** (runs in parallel or after):
+1. Queries `Service` entities with `status: planned`.
+2. Updates `auth-service` status to `in-progress`.
+3. Later updates to `complete` with a `commitSha` property.
+4. Reads `btmg://changelog/auth-service` to confirm the change was recorded.
+
+**Review agent** (runs last):
+1. Reads `btmg://changelog/payment-service` to see all changes made during the session.
+2. Uses `diff` to compare versions 1 and 3 of `payment-service`.
+3. Upserts a `Review` entity linked to `payment-service` with its findings.
+4. Triggers a final `sync` to update documentation with the review outcome.
+
+Each agent works independently but shares a coherent, versioned view of the system through the graph.

@@ -1,0 +1,174 @@
+---
+title: Quick Start
+description: Get BTMG running in a new project in minutes. Install the package, define your schema, apply it to Neo4j, and start syncing your knowledge graph with documentation.
+---
+
+This guide walks through the essential steps to go from a blank project to a working BTMG setup with a live Neo4j graph and MCP server for AI agents.
+
+Before starting, make sure you have a running Neo4j instance. See the [Neo4j Setup](/neo4j-setup) guide if you need one.
+
+---
+
+## Step 1: Install
+
+```bash
+npm install btmg-fourthspace
+```
+
+BTMG requires Node.js 18 or later.
+
+---
+
+## Step 2: Define your schema
+
+Create a `btmg.config.ts` file at the root of your project. This file defines the node types, edge types, and their validation rules using `defineSchema`.
+
+```ts
+import { defineConfig, defineSchema } from "btmg-fourthspace";
+
+const schema = defineSchema({
+  nodes: {
+    Service: {
+      properties: {
+        name: { type: "string", required: true },
+        owner: { type: "string" },
+        status: { type: "string", enum: ["active", "deprecated", "planned"] },
+      },
+    },
+    Decision: {
+      properties: {
+        title: { type: "string", required: true },
+        rationale: { type: "string" },
+        date: { type: "string" },
+        status: { type: "string", enum: ["proposed", "accepted", "superseded"] },
+      },
+    },
+  },
+  edges: {
+    DEPENDS_ON: {
+      from: "Service",
+      to: "Service",
+      properties: {
+        critical: { type: "boolean" },
+      },
+    },
+    DECIDED_BY: {
+      from: "Service",
+      to: "Decision",
+      properties: {
+        context: { type: "string" },
+      },
+    },
+  },
+});
+
+export default defineConfig({
+  schema,
+  neo4j: {
+    uri: process.env.NEO4J_URI ?? "bolt://localhost:7687",
+    username: process.env.NEO4J_USERNAME ?? "neo4j",
+    password: process.env.NEO4J_PASSWORD ?? "password",
+  },
+});
+```
+
+All node and edge properties are validated at runtime using Zod. BTMG generates the validators automatically from your schema definition.
+
+---
+
+## Step 3: Apply the schema to Neo4j
+
+Run the migrate command to create indexes and uniqueness constraints in your Neo4j instance:
+
+```bash
+npx btmg migrate
+```
+
+You should see output confirming each constraint was applied. Re-running this command is safe — BTMG checks for existing constraints before applying new ones.
+
+---
+
+## Step 4: Use the API
+
+Import and instantiate BTMG in your application code, then start reading and writing to the graph.
+
+```ts
+import { BTMG } from "btmg-fourthspace";
+
+const btmg = new BTMG();
+
+// Upsert a Service node. If a node with this id already exists,
+// BTMG creates a new temporal version rather than overwriting it.
+await btmg.upsert("Service", {
+  id: "auth-service",
+  name: "Auth Service",
+  owner: "platform-team",
+  status: "active",
+});
+
+// Upsert a Decision node.
+await btmg.upsert("Decision", {
+  id: "decision-001",
+  title: "Adopt JWT for authentication",
+  rationale: "Stateless tokens simplify horizontal scaling.",
+  date: "2025-11-10",
+  status: "accepted",
+});
+
+// Create an edge between them.
+await btmg.relate("auth-service", "DECIDED_BY", "decision-001", {
+  context: "Initial architecture review",
+});
+
+// Query all active services.
+const services = await btmg.query("Service", { status: "active" });
+console.log(services);
+
+// Time-travel: retrieve the state of a node as it was at a specific point in time.
+const previousState = await btmg.asOf("auth-service", new Date("2025-12-01"));
+console.log(previousState);
+
+// Sync graph state to documentation files.
+// This writes MDX files to the path configured under `docs` in btmg.config.ts.
+await btmg.syncToDocs();
+```
+
+BTMG uses bitemporal versioning internally. Every `upsert` records both the valid time (when the fact became true in the world) and the transaction time (when it was recorded in the graph), enabling accurate historical queries and a full audit trail.
+
+---
+
+## Step 5: Connect AI agents via MCP
+
+BTMG ships with a built-in MCP server, exposing the graph as a set of tools that AI agents can call directly. Add the following to your Claude or Cursor MCP configuration:
+
+### Claude Desktop (`claude_desktop_config.json`)
+
+```json
+{
+  "mcpServers": {
+    "btmg": {
+      "command": "npx",
+      "args": ["btmg-fourthspace", "mcp"],
+      "cwd": "/path/to/your/project"
+    }
+  }
+}
+```
+
+### Cursor (`.cursor/mcp.json`)
+
+```json
+{
+  "servers": {
+    "btmg": {
+      "command": "npx",
+      "args": ["btmg-fourthspace", "mcp"],
+      "cwd": "/path/to/your/project"
+    }
+  }
+}
+```
+
+Replace `/path/to/your/project` with the absolute path to the directory containing your `btmg.config.ts`.
+
+Once connected, agents can call tools such as `btmg_query`, `btmg_upsert`, `btmg_relate`, and `btmg_asOf` to read from and write to the graph during conversations — without any additional setup on your part.

@@ -1,0 +1,471 @@
+---
+title: API Reference
+description: Complete reference for the BTMG class — constructor, methods, and TypeScript types.
+---
+
+The `BTMG` class is the main entry point for all graph operations. Import it from `btmg-fourthspace`.
+
+```ts
+import { BTMG } from 'btmg-fourthspace'
+```
+
+---
+
+## Constructor
+
+```ts
+const graph = new BTMG(config: BTMGConfig, neo4jConfig?: Neo4jClientConfig)
+```
+
+Creates a new BTMG instance. The Neo4j connection is established lazily on first use.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `config` | `BTMGConfig` | Yes | Graph configuration including schema definitions |
+| `neo4jConfig` | `Neo4jClientConfig` | No | Neo4j connection details. Falls back to `NEO4J_URI`, `NEO4J_USERNAME`, and `NEO4J_PASSWORD` environment variables if omitted |
+
+```ts
+import { BTMG } from 'btmg-fourthspace'
+import { schema } from './schema'
+
+const graph = new BTMG(
+  { schema },
+  {
+    uri: 'bolt://localhost:7687',
+    username: 'neo4j',
+    password: 'password',
+  }
+)
+```
+
+---
+
+## Methods
+
+### `migrate`
+
+```ts
+migrate(): Promise<string[]>
+```
+
+Applies schema constraints and indexes to the connected Neo4j database. Returns a list of the Cypher statements that were executed.
+
+Run this once after initial setup, and again whenever your schema changes. It is safe to run repeatedly — statements that already exist are skipped.
+
+```ts
+const applied = await graph.migrate()
+console.log(`Applied ${applied.length} schema statements`)
+```
+
+---
+
+### `upsert`
+
+```ts
+upsert(
+  label: string,
+  properties: Record<string, unknown>,
+  opts?: { id?: string; actor?: string }
+): Promise<UpsertResult>
+```
+
+Creates or updates an entity in the graph. If `opts.id` is provided and matches an existing entity, a new version is written. If no matching entity exists, one is created.
+
+All properties are validated against the registered schema for the given label before the write is executed.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `label` | `string` | The entity label (must match a schema definition) |
+| `properties` | `Record<string, unknown>` | Entity properties to write |
+| `opts.id` | `string` | Existing entity ID to update. Omit to create a new entity |
+| `opts.actor` | `string` | Identifier of the user or agent performing the write |
+
+```ts
+const result = await graph.upsert(
+  'Service',
+  { name: 'auth-service', status: 'active', version: '2.1.0' },
+  { actor: 'deploy-pipeline' }
+)
+
+console.log(result.id)       // generated or existing entity ID
+console.log(result.version)  // current version number
+console.log(result.created)  // true if new, false if updated
+```
+
+---
+
+### `delete`
+
+```ts
+delete(id: string, actor?: string): Promise<void>
+```
+
+Soft-deletes an entity by closing its current temporal state. The entity and its full history remain in the graph and are still queryable via `getAt` and `history`. It will no longer appear in `get` or `query` results.
+
+```ts
+await graph.delete('entity-id-here', 'seb@example.com')
+```
+
+---
+
+### `relate`
+
+```ts
+relate(
+  fromId: string,
+  toId: string,
+  type: string,
+  fromLabel: string,
+  toLabel: string,
+  properties?: Record<string, unknown>,
+  actor?: string
+): Promise<void>
+```
+
+Creates a typed relationship between two entities. Relationships are also versioned — a new relationship of the same type between the same entities supersedes the previous one.
+
+```ts
+await graph.relate(
+  'service-id',
+  'database-id',
+  'DEPENDS_ON',
+  'Service',
+  'Database',
+  { since: '2025-01-01' },
+  'seb@example.com'
+)
+```
+
+---
+
+### `unrelate`
+
+```ts
+unrelate(
+  fromId: string,
+  toId: string,
+  type: string,
+  actor?: string
+): Promise<void>
+```
+
+Removes an active relationship between two entities by closing its temporal state. The relationship history is preserved.
+
+```ts
+await graph.unrelate('service-id', 'database-id', 'DEPENDS_ON', 'seb@example.com')
+```
+
+---
+
+### `get`
+
+```ts
+get(id: string): Promise<EntityWithState | null>
+```
+
+Returns the current state of an entity. Returns `null` if the entity does not exist or has been soft-deleted.
+
+```ts
+const entity = await graph.get('entity-id-here')
+
+if (entity) {
+  console.log(entity.entity._label)      // 'Service'
+  console.log(entity.state._version)     // 3
+  console.log(entity.state.name)         // 'auth-service'
+}
+```
+
+---
+
+### `getAt`
+
+```ts
+getAt(id: string, timestamp: Date | string): Promise<EntityWithState | null>
+```
+
+Returns the state of an entity as it existed at the given point in time. This is the primary time-travel API.
+
+Pass any past timestamp to reconstruct what the entity looked like at that moment, regardless of how many versions have been written since.
+
+```ts
+const past = await graph.getAt(
+  'entity-id-here',
+  new Date('2025-06-01T00:00:00Z')
+)
+
+if (past) {
+  console.log(past.state.version)  // '1.4.0' — the version at that time
+}
+```
+
+---
+
+### `history`
+
+```ts
+history(id: string): Promise<Record<string, unknown>[]>
+```
+
+Returns all versions of an entity in chronological order. Each entry is the full state snapshot for that version period.
+
+```ts
+const versions = await graph.history('entity-id-here')
+
+versions.forEach((v) => {
+  console.log(v._version, v._valid_from, v._valid_to)
+})
+```
+
+---
+
+### `query`
+
+```ts
+query(label: string): Promise<EntityWithState[]>
+```
+
+Returns all currently active entities with the given label.
+
+```ts
+const services = await graph.query('Service')
+
+services.forEach((s) => {
+  console.log(s.entity._id, s.state.name)
+})
+```
+
+---
+
+### `snapshot`
+
+```ts
+snapshot(
+  timestamp: Date | string,
+  labels?: string[]
+): Promise<GraphSnapshot>
+```
+
+Reconstructs the entire graph — or a subset of it — as it existed at a given point in time. Returns every entity and relationship that was active at that timestamp.
+
+Pass `labels` to limit the snapshot to specific entity types. Omit it to snapshot the full graph.
+
+```ts
+const snap = await graph.snapshot(
+  new Date('2025-09-01T00:00:00Z'),
+  ['Service', 'Database']
+)
+
+console.log(snap.entities.length)
+console.log(snap.relationships.length)
+```
+
+---
+
+### `changelog`
+
+```ts
+changelog(id: string): Promise<VersionDiff[]>
+```
+
+Returns a structured diff for each version transition of an entity. Each entry describes exactly which properties changed between two consecutive versions.
+
+```ts
+const diffs = await graph.changelog('entity-id-here')
+
+diffs.forEach((diff) => {
+  console.log(`v${diff.fromVersion} -> v${diff.toVersion}`)
+  diff.changes.forEach((c) => {
+    console.log(`  ${c.property}: ${c.from} -> ${c.to}`)
+  })
+})
+```
+
+---
+
+### `audit`
+
+```ts
+audit(entityId: string, limit?: number): Promise<AuditEntry[]>
+```
+
+Returns the audit trail for an entity — every write operation, who performed it, and when. Results are ordered newest first.
+
+Pass `limit` to cap the number of entries returned. Defaults to returning all entries.
+
+```ts
+const trail = await graph.audit('entity-id-here', 20)
+
+trail.forEach((entry) => {
+  console.log(entry.actor, entry.action, entry.timestamp)
+})
+```
+
+---
+
+### `sync`
+
+```ts
+sync(opts?: {
+  docsDir?: string
+  format?: 'md' | 'mdx'
+  conflictStrategy?: 'graph-wins' | 'docs-wins' | 'manual'
+  actor?: string
+}): Promise<SyncResult>
+```
+
+Runs the bidirectional sync between the graph and the documentation directory. The sync reads structured content from doc files and merges it with graph state, then regenerates doc files from the updated graph.
+
+| Option | Default | Description |
+|---|---|---|
+| `docsDir` | `./docs` | Path to the documentation directory |
+| `format` | `'mdx'` | Output file format |
+| `conflictStrategy` | `'graph-wins'` | How to resolve conflicts when both sides have changed |
+| `actor` | `undefined` | Actor identifier attributed to sync-generated writes |
+
+```ts
+const result = await graph.sync({
+  docsDir: './content',
+  format: 'mdx',
+  conflictStrategy: 'graph-wins',
+  actor: 'sync-bot',
+})
+
+console.log(`Created: ${result.created}`)
+console.log(`Updated: ${result.updated}`)
+console.log(`Deleted: ${result.deleted}`)
+console.log(`Conflicts: ${result.conflicts.length}`)
+console.log(`Errors: ${result.errors.length}`)
+```
+
+---
+
+### `validate`
+
+```ts
+validate(label: string, properties: Record<string, unknown>): void
+```
+
+Validates a set of properties against the registered schema for the given label. Throws a validation error if any properties are missing, of the wrong type, or violate schema constraints.
+
+This is called automatically inside `upsert`, but you can call it directly to validate data before committing a write.
+
+```ts
+try {
+  graph.validate('Service', { name: 'auth-service', status: 'unknown-status' })
+} catch (err) {
+  console.error('Validation failed:', err.message)
+}
+```
+
+---
+
+### `close`
+
+```ts
+close(): Promise<void>
+```
+
+Closes the underlying Neo4j driver connection. Call this when shutting down your application to allow the process to exit cleanly.
+
+```ts
+await graph.close()
+```
+
+---
+
+## Types
+
+### `EntityWithState`
+
+The shape returned by `get`, `getAt`, and `query`.
+
+```ts
+type EntityWithState = {
+  entity: {
+    _id: string
+    _label: string
+    _created_at: string
+  }
+  state: {
+    _version: number
+    _valid_from: string
+    _valid_to: string | null
+    _actor: string | null
+    [key: string]: unknown  // entity-specific properties
+  }
+}
+```
+
+`_valid_to` is `null` for the current (open) version. A non-null value means the entity has been deleted or superseded.
+
+---
+
+### `UpsertResult`
+
+```ts
+type UpsertResult = {
+  id: string
+  version: number
+  created: boolean
+}
+```
+
+`created` is `true` if this was a new entity, `false` if an existing entity was updated.
+
+---
+
+### `SyncResult`
+
+```ts
+type SyncResult = {
+  created: number
+  updated: number
+  deleted: number
+  conflicts: ConflictRecord[]
+  errors: SyncError[]
+}
+```
+
+`conflicts` contains entries where both the graph and the doc file had changes that could not be automatically merged. `errors` contains entries where a file could not be read, parsed, or written.
+
+---
+
+### `VersionDiff`
+
+```ts
+type VersionDiff = {
+  entityId: string
+  fromVersion: number
+  toVersion: number
+  changes: PropertyChange[]
+}
+
+type PropertyChange = {
+  property: string
+  from: unknown
+  to: unknown
+}
+```
+
+---
+
+### `BTMGConfig`
+
+```ts
+type BTMGConfig = {
+  schema: SchemaDefinition
+  docsDir?: string
+}
+```
+
+---
+
+### `Neo4jClientConfig`
+
+```ts
+type Neo4jClientConfig = {
+  uri: string
+  username: string
+  password: string
+}
+```

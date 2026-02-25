@@ -1,0 +1,15 @@
+{
+  "title": "Documentation",
+  "pages": [
+    "index",
+    "installation",
+    "quick-start",
+    "schema",
+    "temporal-model",
+    "neo4j-setup",
+    "sync-engine",
+    "cli",
+    "mcp-agents",
+    "api-reference"
+  ]
+}

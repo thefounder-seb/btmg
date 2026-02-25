@@ -1,0 +1,68 @@
+---
+title: Installation
+description: Install BTMG and connect it to a Neo4j instance to get a shared knowledge graph running in your project.
+---
+
+## Requirements
+
+- Node.js 18 or later
+- Neo4j 5 or later (local instance or AuraDB)
+
+## Install
+
+```bash
+npm install btmg-fourthspace
+```
+
+## Package Exports
+
+BTMG ships two entry points:
+
+| Export | Description |
+|---|---|
+| `btmg-fourthspace` | Main API and CLI — entity reads, writes, schema validation, doc sync |
+| `btmg-fourthspace/mcp` | MCP server — exposes the graph to AI agents over the Model Context Protocol |
+
+Import the main API in your code:
+
+```ts
+import { BTMG } from 'btmg-fourthspace'
+```
+
+Import the MCP server separately if you are running it as a standalone process for agent access:
+
+```ts
+import { startMcpServer } from 'btmg-fourthspace/mcp'
+```
+
+## What Gets Installed
+
+**CLI.** The `btmg` command is added to your path after installation. Use it to manage the graph, run migrations, and sync documentation.
+
+```bash
+npx btmg --help
+```
+
+**Core API.** The TypeScript API provides typed methods for reading and writing entities, querying temporal state, and managing relationships. All writes are validated through Zod schemas before reaching the graph.
+
+**MCP Server.** The MCP server exposes the graph as a set of tools that AI agents can call via the Model Context Protocol. Agents can read entities, write observations, and query history without direct Neo4j access.
+
+## Connect to Neo4j
+
+Set the following environment variables before running BTMG:
+
+```bash
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=your-password
+```
+
+For AuraDB, use the connection URI provided in the Aura console.
+
+## Verify the Connection
+
+```bash
+npx btmg status
+```
+
+This checks the Neo4j connection and prints the current graph statistics. If the connection fails, it will print the error and exit with a non-zero code.

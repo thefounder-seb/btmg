@@ -1,0 +1,257 @@
+---
+title: Schema Definition
+description: Define the shape of your knowledge graph. BTMG enforces every write against your schema, making hallucinated or malformed data structurally impossible.
+---
+
+## What the Schema Does
+
+Before any entity or relationship can be written to the graph, BTMG runs it through your schema definition. If the data does not match — wrong type, missing required field, unknown label — the write is rejected with an explicit error.
+
+This is the primary mechanism that keeps agents grounded. An agent cannot write `"status": "deployed"` if the schema defines `status` as an enum of `["running", "stopped", "degraded"]`. It cannot omit a required field. It cannot create a relationship between node types that are not permitted to be connected.
+
+The schema is not documentation. It is a hard constraint enforced at runtime on every mutation.
+
+---
+
+## `defineSchema()`
+
+All schema configuration passes through the `defineSchema()` helper. This function validates the schema itself at startup and registers it with the BTMG runtime.
+
+```ts
+import { defineSchema } from 'btmg-fourthspace';
+
+export const schema = defineSchema({
+  nodes: {
+    // node type definitions
+  },
+  edges: {
+    // edge type definitions
+  },
+  constraints: [
+    // Neo4j constraint declarations
+  ],
+});
+```
+
+Pass the exported schema to your BTMG client when initialising:
+
+```ts
+import { createClient } from 'btmg-fourthspace';
+import { schema } from './schema';
+
+const btmg = createClient({ neo4j: { uri, username, password }, schema });
+```
+
+---
+
+## Node Types
+
+Each key in `nodes` defines a node label. The value describes the shape of every node with that label.
+
+```ts
+nodes: {
+  Service: {
+    label: 'Service',
+    properties: {
+      name:        { type: 'string',   required: true },
+      status:      { type: 'enum',     values: ['running', 'stopped', 'degraded'], required: true },
+      port:        { type: 'number',   required: false },
+      internal:    { type: 'boolean',  required: false },
+      deployedAt:  { type: 'date',     required: false },
+      docsUrl:     { type: 'url',      required: false },
+      ownerEmail:  { type: 'email',    required: false },
+      tags:        { type: 'string[]', required: false },
+      metadata:    { type: 'json',     required: false },
+    },
+    uniqueKeys: [['name']],
+  },
+}
+```
+
+### `label`
+
+The Neo4j label applied to nodes of this type. Must match the key in `nodes` by convention.
+
+### `properties`
+
+A map of property names to their type definitions. Each property definition accepts:
+
+| Field | Type | Description |
+|---|---|---|
+| `type` | `PropertyType` | The data type. See the reference table below. |
+| `required` | `boolean` | If `true`, writes without this property are rejected. Defaults to `false`. |
+| `values` | `string[]` | Required when `type` is `'enum'`. Defines the allowed values. |
+
+### `uniqueKeys`
+
+An array of property name arrays. Each inner array defines a composite uniqueness constraint across those properties. A single-element array constrains one property.
+
+```ts
+uniqueKeys: [['name'], ['ownerEmail']],        // two separate unique constraints
+uniqueKeys: [['orgId', 'repoName']],           // composite: unique pair
+```
+
+---
+
+## Edge Types
+
+Each key in `edges` defines a relationship type. Edges connect node labels and can carry their own properties.
+
+```ts
+edges: {
+  DEPENDS_ON: {
+    type: 'DEPENDS_ON',
+    from: 'Service',
+    to:   'Service',
+    properties: {
+      since:    { type: 'date',    required: false },
+      critical: { type: 'boolean', required: false },
+    },
+  },
+  OWNED_BY: {
+    type: 'OWNED_BY',
+    from: 'Service',
+    to:   'Team',
+  },
+}
+```
+
+### `type`
+
+The Neo4j relationship type. Conventionally uppercase with underscores.
+
+### `from` / `to`
+
+The node labels this edge is permitted to connect. BTMG rejects any attempt to create this relationship between nodes of other labels.
+
+### `properties`
+
+Optional. Same structure as node properties. Only applied when creating or updating the relationship.
+
+---
+
+## Constraints
+
+The `constraints` array declares Neo4j schema constraints. BTMG applies these when the schema is initialised against a live database.
+
+```ts
+constraints: [
+  { type: 'unique', label: 'Service', property: 'name' },
+  { type: 'exists', label: 'Service', property: 'status' },
+  { type: 'index',  label: 'Service', property: 'deployedAt' },
+],
+```
+
+| Type | Description |
+|---|---|
+| `unique` | Enforces uniqueness at the database level for a single property. |
+| `exists` | Ensures the property is always present on nodes of that label. |
+| `index` | Creates a range index to speed up queries on that property. |
+
+Constraints defined here correspond directly to Neo4j constraint and index creation. BTMG calls `CREATE CONSTRAINT` and `CREATE INDEX` on startup if they do not already exist.
+
+---
+
+## Property Type Reference
+
+| Type | TypeScript equivalent | Notes |
+|---|---|---|
+| `string` | `string` | Plain text value. |
+| `number` | `number` | Integer or float. |
+| `boolean` | `boolean` | `true` or `false`. |
+| `date` | `Date` / ISO 8601 string | Stored as Neo4j `DateTime`. |
+| `url` | `string` | Validated against URL format before write. |
+| `email` | `string` | Validated against email format before write. |
+| `enum` | `string` | Must be one of the values listed in `values`. |
+| `string[]` | `string[]` | Array of strings. Stored as a Neo4j list property. |
+| `json` | `Record<string, unknown>` | Arbitrary object. Stored as a JSON string. |
+
+---
+
+## Full Example
+
+A schema for a platform with services, teams, and repositories:
+
+```ts
+import { defineSchema } from 'btmg-fourthspace';
+
+export const schema = defineSchema({
+  nodes: {
+    Service: {
+      label: 'Service',
+      properties: {
+        name:        { type: 'string',   required: true },
+        status:      { type: 'enum',     values: ['running', 'stopped', 'degraded'], required: true },
+        port:        { type: 'number',   required: false },
+        internal:    { type: 'boolean',  required: false },
+        deployedAt:  { type: 'date',     required: false },
+        docsUrl:     { type: 'url',      required: false },
+        ownerEmail:  { type: 'email',    required: false },
+        tags:        { type: 'string[]', required: false },
+        metadata:    { type: 'json',     required: false },
+      },
+      uniqueKeys: [['name']],
+    },
+    Team: {
+      label: 'Team',
+      properties: {
+        name:     { type: 'string', required: true },
+        slackUrl: { type: 'url',    required: false },
+      },
+      uniqueKeys: [['name']],
+    },
+    Repository: {
+      label: 'Repository',
+      properties: {
+        name:     { type: 'string', required: true },
+        url:      { type: 'url',    required: true },
+        language: { type: 'string', required: false },
+      },
+      uniqueKeys: [['url']],
+    },
+  },
+  edges: {
+    DEPENDS_ON: {
+      type: 'DEPENDS_ON',
+      from: 'Service',
+      to:   'Service',
+      properties: {
+        since:    { type: 'date',    required: false },
+        critical: { type: 'boolean', required: false },
+      },
+    },
+    OWNED_BY: {
+      type: 'OWNED_BY',
+      from: 'Service',
+      to:   'Team',
+    },
+    HAS_REPO: {
+      type: 'HAS_REPO',
+      from: 'Service',
+      to:   'Repository',
+    },
+  },
+  constraints: [
+    { type: 'unique', label: 'Service',    property: 'name' },
+    { type: 'unique', label: 'Team',       property: 'name' },
+    { type: 'unique', label: 'Repository', property: 'url'  },
+    { type: 'exists', label: 'Service',    property: 'status' },
+    { type: 'index',  label: 'Service',    property: 'deployedAt' },
+  ],
+});
+```
+
+---
+
+## Validation Errors
+
+When a write fails schema validation, BTMG throws a `SchemaValidationError` with a message identifying exactly what was wrong:
+
+```
+SchemaValidationError: Node 'Service' — property 'status' must be one of: running, stopped, degraded. Received: "active"
+SchemaValidationError: Node 'Service' — required property 'name' is missing
+SchemaValidationError: Edge 'DEPENDS_ON' — 'from' node must be label 'Service'. Received label: 'Team'
+SchemaValidationError: Node 'Service' — property 'ownerEmail' failed email format validation. Received: "not-an-email"
+```
+
+The error is thrown before any database call is made. Nothing is written to Neo4j unless the payload fully satisfies the schema.
