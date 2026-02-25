@@ -70,14 +70,120 @@ export interface BTMGConfig {
     password?: string;
     database?: string;
   };
-  docs?: {
-    directory?: string;
-    format?: "mdx" | "md";
-    templateDir?: string;
-  };
+  docs?: DocsConfig;
   sync?: {
     conflictStrategy?: ConflictStrategy;
   };
+  scan?: ScanConfig;
+}
+
+// ── Docs config ──
+
+export interface DocsConfig {
+  /** Where generated MDX/MD files are written */
+  outputDir?: string;
+  /** @deprecated Use outputDir instead */
+  directory?: string;
+  /** File format for output */
+  format?: "mdx" | "md";
+  /** Custom template directory */
+  templateDir?: string;
+  /** Target framework for format adapter */
+  framework?: DocsFramework;
+  /** Built-in viewer config */
+  viewer?: {
+    port?: number;
+    title?: string;
+    open?: boolean;
+  };
+}
+
+export type DocsFramework =
+  | "fumadocs"
+  | "docusaurus"
+  | "nextra"
+  | "vitepress"
+  | "raw";
+
+// ── Scan config ──
+
+export interface ScanConfig {
+  /** Directories/patterns to scan (relative to project root) */
+  include?: string[];
+  /** Directories/patterns to ignore */
+  exclude?: string[];
+  /** Language hints (auto-detected if omitted) */
+  languages?: SupportedLanguage[];
+  /** Schema mapping rules: how code artifacts map to user-defined node labels */
+  mappings: ScanMapping[];
+  /** GitHub-specific config */
+  github?: {
+    depth?: number;
+    branch?: string;
+    apiMode?: boolean;
+  };
+}
+
+export type SupportedLanguage =
+  | "typescript"
+  | "javascript"
+  | "python"
+  | "go"
+  | "rust"
+  | "java"
+  | "generic";
+
+export type ArtifactKind =
+  | "file"
+  | "module"
+  | "function"
+  | "class"
+  | "interface"
+  | "type"
+  | "api_endpoint"
+  | "dependency"
+  | "env_var"
+  | "config_key"
+  | "export";
+
+export interface ScanMapping {
+  /** What kind of code artifact this mapping targets */
+  artifact: ArtifactKind;
+  /** Which user-defined node label to map to */
+  label: string;
+  /** How to populate node properties from the artifact */
+  properties: Record<string, PropertyMapping>;
+  /** Optional filter predicate */
+  filter?: (artifact: RawArtifact) => boolean;
+}
+
+export type PropertyMapping =
+  | string
+  | { from: string }
+  | { value: unknown }
+  | { compute: (artifact: RawArtifact) => unknown };
+
+export interface RawArtifact {
+  kind: ArtifactKind;
+  name: string;
+  filePath: string;
+  language: SupportedLanguage;
+  meta: Record<string, unknown>;
+  location?: { start: number; end: number };
+  refs: ArtifactRef[];
+}
+
+export interface ArtifactRef {
+  kind: "imports" | "extends" | "implements" | "calls" | "depends_on" | "configures";
+  target: string;
+}
+
+// ── Schema presets ──
+
+export interface SchemaPreset {
+  name: string;
+  nodes: NodeTypeDef[];
+  edges: EdgeTypeDef[];
 }
 
 export type ConflictStrategy = "graph-wins" | "docs-wins" | "fail" | "merge";
