@@ -5,7 +5,7 @@
 
 import type { Neo4jClient } from "../neo4j/client.js";
 import type { SchemaRegistry } from "../schema/registry.js";
-import type { ConflictStrategy, SyncResult } from "../schema/types.js";
+import type { ConflictStrategy, DocsFramework, SyncResult } from "../schema/types.js";
 import { queryByLabel, getRelationshipMap } from "../temporal/model.js";
 import { parseDocs } from "../docs/parser.js";
 import { writeDocs } from "../docs/renderer.js";
@@ -14,6 +14,7 @@ import { resolveConflicts } from "./conflict.js";
 import { upsert, remove } from "../graph/crud.js";
 import type { RenderTemplate } from "../docs/templates.js";
 import { defaultTemplate } from "../docs/templates.js";
+import { getAdapter } from "../docs/adapters/index.js";
 
 export interface SyncOptions {
   /** Directory containing doc files */
@@ -28,6 +29,8 @@ export interface SyncOptions {
   template?: RenderTemplate;
   /** Only sync specific labels */
   labels?: string[];
+  /** Target docs framework — selects the format adapter */
+  framework?: DocsFramework;
 }
 
 /** Run a full bidirectional sync */
@@ -43,7 +46,10 @@ export async function sync(
     actor = "btmg-sync",
     template = defaultTemplate,
     labels,
+    framework,
   } = options;
+
+  const adapter = getAdapter(framework);
 
   const result: SyncResult = {
     created: 0,
@@ -123,7 +129,7 @@ export async function sync(
     client,
     allEntities.map((e) => e.entity._id)
   );
-  writeDocs(allEntities, docsDir, template, relationshipMap);
+  writeDocs(allEntities, docsDir, template, relationshipMap, adapter);
 
   return result;
 }
